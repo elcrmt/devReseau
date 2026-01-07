@@ -3,6 +3,8 @@ import json
 import threading
 import hashlib
 import uuid
+import os
+import struct
 from datetime import datetime
 
 
@@ -16,6 +18,14 @@ class FileShareServer:
         self.sessions = {}  # {token: username}
         self.running = False
         self.clients_lock = threading.Lock()  # Lock pour accès thread-safe aux clients
+        
+        # Stockage des fichiers par room
+        self.files_by_room = {}  # {room_id: [{"filename": "", "uploader": "", "size": 0, "path": ""}]}
+        self.upload_dir = "uploads"
+        
+        # Créer le dossier uploads s'il n'existe pas
+        if not os.path.exists(self.upload_dir):
+            os.makedirs(self.upload_dir)
         
         # Rooms en dur
         self.rooms = {
@@ -40,6 +50,13 @@ class FileShareServer:
                 "members": []
             }
         }
+        
+        # Initialiser la liste de fichiers pour chaque room
+        for room_id in self.rooms.keys():
+            self.files_by_room[room_id] = []
+            room_dir = os.path.join(self.upload_dir, room_id)
+            if not os.path.exists(room_dir):
+                os.makedirs(room_dir)
         
     def start(self):
         """Démarrer le serveur"""
@@ -364,6 +381,245 @@ class FileShareServer:
                 if exclude_socket is None or client_socket != exclude_socket:
                     self.send_message(client_socket, message_type, payload)
     
+    def handle_upload_file(self, client_socket, payload):
+        """Gérer l'upload d'un fichier dans la room"""
+        session_token = payload.get("session_token")
+        filename = payload.get("filename")
+        file_size = payload.get("size")
+        
+        if session_token not in self.sessions:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Session invalide",
+                "code": "INVALID_SESSION"
+            })
+            return
+        
+        username = self.sessions[session_token]
+        
+        if client_socket not in self.clients or "room" not in self.clients[client_socket]:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Vous devez rejoindre une room d'abord",
+                "code": "NOT_IN_ROOM"
+            })
+            return
+        
+        room_id = self.clients[client_socket]["room"]
+        
+        if not room_id or room_id not in self.rooms:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Room invalide",
+                "code": "INVALID_ROOM"
+            })
+            return
+        
+        # Vérifier la taille du fichier (max 100 MB)
+        if file_size > 100 * 1024 * 1024:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Fichier trop volumineux (max 100 MB)",
+                "code": "FILE_TOO_LARGE"
+            })
+            return
+        
+        # Créer un nom de fichier unique
+        file_id = str(uuid.uuid4())[:8]
+        safe_filename = f"{file_id}_{filename}"
+        file_path = os.path.join(self.upload_dir, room_id, safe_filename)
+        
+        print(f"📤 [{room_id}] {username} upload '{filename}' ({file_size} octets)")
+        
+        # Signaler que le serveur est prêt à recevoir
+        self.send_message(client_socket, "UPLOAD_READY", {
+            "upload_id": file_id,
+            "ready": True
+        })
+        
+        # Recevoir les données binaires
+        try:
+            received = 0
+            with open(file_path, 'wb') as f:
+                while received < file_size:
+                    # Lire la taille du chunk (8 octets)
+                    chunk_size_data = client_socket.recv(8)
+                    if not chunk_size_data or len(chunk_size_data) < 8:
+                        break
+                    
+                    chunk_size = struct.unpack('!Q', chunk_size_data)[0]
+                    
+                    # Lire le chunk
+                    chunk_data = b''
+                    while len(chunk_data) < chunk_size:
+                        remaining = chunk_size - len(chunk_data)
+                        data = client_socket.recv(min(8192, remaining))
+                        if not data:
+                            break
+                        chunk_data += data
+                    
+                    f.write(chunk_data)
+                    received += len(chunk_data)
+            
+            if received == file_size:
+                # Enregistrer les métadonnées
+                file_metadata = {
+                    "filename": filename,
+                    "safe_filename": safe_filename,
+                    "uploader": username,
+                    "size": file_size,
+                    "path": file_path,
+                    "upload_date": datetime.now().isoformat()
+                }
+                self.files_by_room[room_id].append(file_metadata)
+                
+                # Confirmer l'upload
+                self.send_message(client_socket, "UPLOAD_COMPLETE", {
+                    "upload_id": file_id,
+                    "filename": filename,
+                    "success": True
+                })
+                
+                print(f"✅ [{room_id}] Fichier '{filename}' uploadé par {username}")
+                
+                # Notifier tous les membres de la room
+                self.broadcast_to_room(room_id, "FILE_SHARED", {
+                    "filename": filename,
+                    "uploader": username,
+                    "size": file_size,
+                    "room_id": room_id,
+                    "timestamp": datetime.now().isoformat()
+                })
+            else:
+                os.remove(file_path)
+                self.send_message(client_socket, "ERROR", {
+                    "error": "Transfert incomplet",
+                    "code": "TRANSFER_INCOMPLETE"
+                })
+        
+        except Exception as e:
+            print(f"❌ Erreur d'upload: {e}")
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            self.send_message(client_socket, "ERROR", {
+                "error": f"Erreur d'upload: {str(e)}",
+                "code": "UPLOAD_ERROR"
+            })
+    
+    def handle_list_room_files(self, client_socket, payload):
+        """Lister les fichiers de la room actuelle"""
+        session_token = payload.get("session_token")
+        
+        if session_token not in self.sessions:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Session invalide",
+                "code": "INVALID_SESSION"
+            })
+            return
+        
+        username = self.sessions[session_token]
+        
+        if client_socket not in self.clients or "room" not in self.clients[client_socket]:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Vous devez rejoindre une room d'abord",
+                "code": "NOT_IN_ROOM"
+            })
+            return
+        
+        room_id = self.clients[client_socket]["room"]
+        
+        files = self.files_by_room.get(room_id, [])
+        
+        # Formater les infos des fichiers
+        files_info = [
+            {
+                "filename": f["filename"],
+                "uploader": f["uploader"],
+                "size": f["size"],
+                "upload_date": f["upload_date"]
+            }
+            for f in files
+        ]
+        
+        self.send_message(client_socket, "ROOM_FILES_LIST", {
+            "room_id": room_id,
+            "files": files_info
+        })
+    
+    def handle_download_file(self, client_socket, payload):
+        """Gérer le téléchargement d'un fichier de la room"""
+        session_token = payload.get("session_token")
+        filename = payload.get("filename")
+        
+        if session_token not in self.sessions:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Session invalide",
+                "code": "INVALID_SESSION"
+            })
+            return
+        
+        username = self.sessions[session_token]
+        
+        if client_socket not in self.clients or "room" not in self.clients[client_socket]:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Vous devez rejoindre une room d'abord",
+                "code": "NOT_IN_ROOM"
+            })
+            return
+        
+        room_id = self.clients[client_socket]["room"]
+        
+        # Trouver le fichier
+        file_metadata = None
+        for f in self.files_by_room.get(room_id, []):
+            if f["filename"] == filename:
+                file_metadata = f
+                break
+        
+        if not file_metadata:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Fichier introuvable",
+                "code": "FILE_NOT_FOUND"
+            })
+            return
+        
+        file_path = file_metadata["path"]
+        
+        if not os.path.exists(file_path):
+            self.send_message(client_socket, "ERROR", {
+                "error": "Fichier physique introuvable",
+                "code": "FILE_NOT_FOUND"
+            })
+            return
+        
+        print(f"📥 [{room_id}] {username} télécharge '{filename}'")
+        
+        # Signaler que le serveur est prêt à envoyer
+        self.send_message(client_socket, "DOWNLOAD_READY", {
+            "filename": filename,
+            "size": file_metadata["size"]
+        })
+        
+        # Envoyer les données binaires par chunks
+        try:
+            with open(file_path, 'rb') as f:
+                while True:
+                    chunk = f.read(8192)
+                    if not chunk:
+                        break
+                    
+                    # Envoyer la taille du chunk (8 octets)
+                    chunk_size = struct.pack('!Q', len(chunk))
+                    client_socket.sendall(chunk_size)
+                    
+                    # Envoyer le chunk
+                    client_socket.sendall(chunk)
+            
+            print(f"✅ [{room_id}] Fichier '{filename}' téléchargé par {username}")
+        
+        except Exception as e:
+            print(f"❌ Erreur de download: {e}")
+            self.send_message(client_socket, "ERROR", {
+                "error": f"Erreur de téléchargement: {str(e)}",
+                "code": "DOWNLOAD_ERROR"
+            })
+    
     def handle_client(self, client_socket, address):
         """Gérer un client connecté"""
         try:
@@ -387,6 +643,12 @@ class FileShareServer:
                     self.handle_join_room(client_socket, payload)
                 elif message_type == "SEND_MESSAGE":
                     self.handle_send_message(client_socket, payload)
+                elif message_type == "UPLOAD_FILE":
+                    self.handle_upload_file(client_socket, payload)
+                elif message_type == "LIST_ROOM_FILES":
+                    self.handle_list_room_files(client_socket, payload)
+                elif message_type == "DOWNLOAD_FILE":
+                    self.handle_download_file(client_socket, payload)
                 elif message_type == "LIST_FILES":
                     self.handle_list_files(client_socket, payload)
                 elif message_type == "LOGOUT":
