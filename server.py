@@ -11,10 +11,34 @@ class FileShareServer:
         self.host = host
         self.port = port
         self.socket = None
-        self.clients = {}  # {socket: {"pseudo": "", "session_token": ""}}
+        self.clients = {}  # {socket: {"pseudo": "", "session_token": "", "room": ""}}
         self.users = {}  # {username: {"password": hash, "email": "", "user_id": ""}}
         self.sessions = {}  # {token: username}
         self.running = False
+        
+        # Rooms en dur
+        self.rooms = {
+            "general": {
+                "name": "Général",
+                "description": "Discussions générales et partage de fichiers",
+                "members": []
+            },
+            "projets": {
+                "name": "Projets",
+                "description": "Espace dédié aux projets collaboratifs",
+                "members": []
+            },
+            "tech": {
+                "name": "Tech",
+                "description": "Discussions techniques et code",
+                "members": []
+            },
+            "random": {
+                "name": "Random",
+                "description": "Pour tout le reste!",
+                "members": []
+            }
+        }
         
     def start(self):
         """Démarrer le serveur"""
@@ -192,8 +216,145 @@ class FileShareServer:
         
         if session_token in self.sessions:
             username = self.sessions[session_token]
+            
+            # Retirer de la room si présent
+            if client_socket in self.clients and "room" in self.clients[client_socket]:
+                room_id = self.clients[client_socket]["room"]
+                if room_id and room_id in self.rooms:
+                    if username in self.rooms[room_id]["members"]:
+                        self.rooms[room_id]["members"].remove(username)
+                        print(f"👋 {username} a quitté la room {room_id}")
+            
             del self.sessions[session_token]
             print(f"🚪 Déconnexion: {username}")
+    
+    def handle_list_rooms(self, client_socket, payload):
+        """Gérer la demande de liste des rooms"""
+        session_token = payload.get("session_token")
+        
+        if session_token not in self.sessions:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Session invalide",
+                "code": "INVALID_SESSION"
+            })
+            return
+        
+        username = self.sessions[session_token]
+        print(f"📋 {username} demande la liste des rooms")
+        
+        # Formater la liste des rooms
+        rooms_list = []
+        for room_id, room_data in self.rooms.items():
+            rooms_list.append({
+                "id": room_id,
+                "name": room_data["name"],
+                "description": room_data["description"],
+                "members_count": len(room_data["members"])
+            })
+        
+        self.send_message(client_socket, "ROOMS_LIST", {
+            "rooms": rooms_list
+        })
+    
+    def handle_join_room(self, client_socket, payload):
+        """Gérer la demande de rejoindre une room"""
+        session_token = payload.get("session_token")
+        room_id = payload.get("room_id")
+        
+        if session_token not in self.sessions:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Session invalide",
+                "code": "INVALID_SESSION"
+            })
+            return
+        
+        username = self.sessions[session_token]
+        
+        if room_id not in self.rooms:
+            self.send_message(client_socket, "JOIN_ERROR", {
+                "error": "Room introuvable",
+                "code": "ROOM_NOT_FOUND"
+            })
+            return
+        
+        # Retirer de l'ancienne room si présent
+        if client_socket in self.clients and "room" in self.clients[client_socket]:
+            old_room = self.clients[client_socket]["room"]
+            if old_room and old_room in self.rooms:
+                if username in self.rooms[old_room]["members"]:
+                    self.rooms[old_room]["members"].remove(username)
+        
+        # Ajouter à la nouvelle room
+        if username not in self.rooms[room_id]["members"]:
+            self.rooms[room_id]["members"].append(username)
+        
+        self.clients[client_socket]["room"] = room_id
+        
+        self.send_message(client_socket, "JOIN_SUCCESS", {
+            "room_id": room_id,
+            "room_name": self.rooms[room_id]["name"],
+            "members": self.rooms[room_id]["members"]
+        })
+        
+        print(f"🚪 {username} a rejoint la room {room_id}")
+        
+        # Notifier les autres membres de la room
+        self.broadcast_to_room(room_id, "USER_JOINED", {
+            "username": username,
+            "room_id": room_id
+        }, exclude_socket=client_socket)
+    
+    def handle_send_message(self, client_socket, payload):
+        """Gérer l'envoi d'un message dans une room"""
+        session_token = payload.get("session_token")
+        message_text = payload.get("message")
+        
+        if session_token not in self.sessions:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Session invalide",
+                "code": "INVALID_SESSION"
+            })
+            return
+        
+        username = self.sessions[session_token]
+        
+        if client_socket not in self.clients or "room" not in self.clients[client_socket]:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Vous devez rejoindre une room d'abord",
+                "code": "NOT_IN_ROOM"
+            })
+            return
+        
+        room_id = self.clients[client_socket]["room"]
+        
+        if not room_id or room_id not in self.rooms:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Room invalide",
+                "code": "INVALID_ROOM"
+            })
+            return
+        
+        print(f"💬 [{room_id}] {username}: {message_text}")
+        
+        # Diffuser le message à tous les membres de la room
+        self.broadcast_to_room(room_id, "MESSAGE", {
+            "username": username,
+            "message": message_text,
+            "room_id": room_id,
+            "timestamp": datetime.now().isoformat()
+        })
+    
+    def broadcast_to_room(self, room_id, message_type, payload, exclude_socket=None):
+        """Envoyer un message à tous les membres d'une room"""
+        if room_id not in self.rooms:
+            return
+        
+        members = self.rooms[room_id]["members"]
+        
+        for client_socket, client_data in self.clients.items():
+            if client_data.get("room") == room_id:
+                if exclude_socket is None or client_socket != exclude_socket:
+                    self.send_message(client_socket, message_type, payload)
     
     def handle_client(self, client_socket, address):
         """Gérer un client connecté"""
@@ -212,6 +373,12 @@ class FileShareServer:
                     self.handle_register(client_socket, payload)
                 elif message_type == "LOGIN":
                     self.handle_login(client_socket, payload)
+                elif message_type == "LIST_ROOMS":
+                    self.handle_list_rooms(client_socket, payload)
+                elif message_type == "JOIN_ROOM":
+                    self.handle_join_room(client_socket, payload)
+                elif message_type == "SEND_MESSAGE":
+                    self.handle_send_message(client_socket, payload)
                 elif message_type == "LIST_FILES":
                     self.handle_list_files(client_socket, payload)
                 elif message_type == "LOGOUT":
@@ -234,6 +401,18 @@ class FileShareServer:
             # Nettoyer le client
             if client_socket in self.clients:
                 pseudo = self.clients[client_socket].get("pseudo", "Inconnu")
+                room_id = self.clients[client_socket].get("room")
+                
+                # Retirer de la room
+                if room_id and room_id in self.rooms:
+                    if pseudo in self.rooms[room_id]["members"]:
+                        self.rooms[room_id]["members"].remove(pseudo)
+                        # Notifier les autres membres
+                        self.broadcast_to_room(room_id, "USER_LEFT", {
+                            "username": pseudo,
+                            "room_id": room_id
+                        })
+                
                 print(f"🔌 Déconnexion: {pseudo} ({address})")
                 del self.clients[client_socket]
             
