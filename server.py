@@ -620,6 +620,84 @@ class FileShareServer:
                 "code": "DOWNLOAD_ERROR"
             })
     
+    def handle_sync_room(self, client_socket, payload):
+        """Gérer la synchronisation de la room (action avec séquence d'états)"""
+        session_token = payload.get("session_token")
+        
+        if session_token not in self.sessions:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Session invalide",
+                "code": "INVALID_SESSION"
+            })
+            return
+        
+        username = self.sessions[session_token]
+        
+        if client_socket not in self.clients or "room" not in self.clients[client_socket]:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Vous devez rejoindre une room d'abord",
+                "code": "NOT_IN_ROOM"
+            })
+            return
+        
+        room_id = self.clients[client_socket]["room"]
+        
+        print(f"🔄 [{room_id}] {username} demande une synchronisation")
+        
+        # ÉTAT 1 : SYNC_PREPARING - Préparation de la synchronisation
+        self.send_message(client_socket, "SYNC_PREPARING", {
+            "message": "Préparation de la synchronisation...",
+            "state": "preparing"
+        })
+        
+        import time
+        time.sleep(0.5)  # Simuler un traitement
+        
+        # ÉTAT 2 : SYNC_READY - Prêt à envoyer les données
+        files = self.files_by_room.get(room_id, [])
+        members = self.rooms[room_id]["members"]
+        
+        self.send_message(client_socket, "SYNC_READY", {
+            "message": "Données prêtes",
+            "state": "ready",
+            "files_count": len(files),
+            "members_count": len(members)
+        })
+        
+        time.sleep(0.3)
+        
+        # ÉTAT 3 : SYNC_DATA - Envoi des données de synchronisation
+        files_info = [
+            {
+                "filename": f["filename"],
+                "uploader": f["uploader"],
+                "size": f["size"],
+                "upload_date": f["upload_date"]
+            }
+            for f in files
+        ]
+        
+        self.send_message(client_socket, "SYNC_DATA", {
+            "state": "syncing",
+            "room_id": room_id,
+            "room_name": self.rooms[room_id]["name"],
+            "files": files_info,
+            "members": members,
+            "total_files_size": sum(f["size"] for f in files)
+        })
+        
+        time.sleep(0.3)
+        
+        # ÉTAT 4 : SYNC_COMPLETE - Synchronisation terminée
+        self.send_message(client_socket, "SYNC_COMPLETE", {
+            "message": "Synchronisation terminée avec succès",
+            "state": "completed",
+            "synced_files": len(files),
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        print(f"✅ [{room_id}] Synchronisation complétée pour {username}")
+    
     def handle_client(self, client_socket, address):
         """Gérer un client connecté"""
         try:
@@ -649,6 +727,8 @@ class FileShareServer:
                     self.handle_list_room_files(client_socket, payload)
                 elif message_type == "DOWNLOAD_FILE":
                     self.handle_download_file(client_socket, payload)
+                elif message_type == "SYNC_ROOM":
+                    self.handle_sync_room(client_socket, payload)
                 elif message_type == "LIST_FILES":
                     self.handle_list_files(client_socket, payload)
                 elif message_type == "LOGOUT":
