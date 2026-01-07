@@ -340,7 +340,8 @@ class FileShareClient:
         print("3. � Fichiers de la room")
         print("4. ⬆️  Partager un fichier dans la room")
         print("5. ⬇️  Télécharger un fichier de la room")
-        print("6. 🚪 Déconnexion")
+        print("6. 🔄 Synchroniser la room")
+        print("7. 🚪 Déconnexion")
         print("="*50)
     
     def list_room_files(self):
@@ -513,6 +514,75 @@ class FileShareClient:
             if os.path.exists(download_path):
                 os.remove(download_path)
     
+    def sync_room(self):
+        """Synchroniser la room - Démonstration d'une action avec séquence d'états"""
+        if not self.session_token or not self.current_room:
+            print("❌ Non connecté à une room!")
+            return
+        
+        print(f"\n🔄 Synchronisation de #{self.current_room_name}...")
+        print("Cette action passe par plusieurs états intermédiaires:\n")
+        
+        # Envoyer la requête de synchronisation
+        self.send_message("SYNC_ROOM", {
+            "session_token": self.session_token
+        })
+        
+        # Recevoir et traiter les états de la séquence
+        state_count = 0
+        while state_count < 4:  # 4 états attendus
+            response = self.receive_message()
+            if not response:
+                print("❌ Erreur: Pas de réponse du serveur")
+                break
+            
+            msg_type = response.get("type")
+            payload = response.get("payload", {})
+            state = payload.get("state", "unknown")
+            
+            if msg_type == "SYNC_PREPARING":
+                print(f"📦 ÉTAT 1/4 : {payload.get('message')}")
+                print(f"   └─ State: {state}\n")
+                state_count += 1
+            
+            elif msg_type == "SYNC_READY":
+                print(f"✅ ÉTAT 2/4 : {payload.get('message')}")
+                print(f"   ├─ State: {state}")
+                print(f"   ├─ Fichiers: {payload.get('files_count')}")
+                print(f"   └─ Membres: {payload.get('members_count')}\n")
+                state_count += 1
+            
+            elif msg_type == "SYNC_DATA":
+                print(f"📊 ÉTAT 3/4 : Réception des données")
+                print(f"   ├─ State: {state}")
+                print(f"   ├─ Room: {payload.get('room_name')}")
+                files = payload.get('files', [])
+                members = payload.get('members', [])
+                total_size = payload.get('total_files_size', 0)
+                
+                print(f"   ├─ Fichiers synchronisés: {len(files)}")
+                print(f"   ├─ Taille totale: {total_size / (1024*1024):.2f} MB")
+                print(f"   └─ Membres actifs: {', '.join(members)}\n")
+                state_count += 1
+            
+            elif msg_type == "SYNC_COMPLETE":
+                print(f"🎉 ÉTAT 4/4 : {payload.get('message')}")
+                print(f"   ├─ State: {state}")
+                print(f"   ├─ Fichiers synchronisés: {payload.get('synced_files')}")
+                print(f"   └─ Timestamp: {payload.get('timestamp')}\n")
+                state_count += 1
+                break
+            
+            elif msg_type == "ERROR":
+                print(f"❌ Erreur: {payload.get('error')}")
+                break
+        
+        if state_count == 4:
+            print("✅ Séquence de synchronisation complète!")
+            print("   Tous les états intermédiaires ont été traversés avec succès.\n")
+        
+        input("Appuie sur ENTRÉE pour continuer...")
+    
     def run(self):
         """Lancer le client"""
         if not self.connect():
@@ -568,6 +638,8 @@ class FileShareClient:
             elif choice == "5":
                 self.download_file()
             elif choice == "6":
+                self.sync_room()
+            elif choice == "7":
                 self.send_message("LOGOUT", {"session_token": self.session_token})
                 print(f"\n👋 À bientôt {self.pseudo}!")
                 self.running = False
