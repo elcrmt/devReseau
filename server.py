@@ -15,6 +15,7 @@ class FileShareServer:
         self.users = {}  # {username: {"password": hash, "email": "", "user_id": ""}}
         self.sessions = {}  # {token: username}
         self.running = False
+        self.clients_lock = threading.Lock()  # Lock pour accès thread-safe aux clients
         
         # Rooms en dur
         self.rooms = {
@@ -51,16 +52,22 @@ class FileShareServer:
             
             print(f"✅ Serveur démarré sur {self.host}:{self.port}")
             print("⏳ En attente de connexions...\n")
+            print("💡 Le serveur utilise un thread par client pour gérer les connexions simultanées\n")
             
             while self.running:
                 try:
                     client_socket, address = self.socket.accept()
-                    print(f"🔌 Nouvelle connexion: {address}")
+                    
+                    with self.clients_lock:
+                        num_clients = len(self.clients)
+                    
+                    print(f"🔌 Nouvelle connexion: {address} (Total: {num_clients + 1} client(s))")
                     
                     # Créer un thread pour gérer le client
                     client_thread = threading.Thread(
                         target=self.handle_client,
-                        args=(client_socket, address)
+                        args=(client_socket, address),
+                        name=f"Client-{address[0]}:{address[1]}"
                     )
                     client_thread.daemon = True
                     client_thread.start()
@@ -175,11 +182,12 @@ class FileShareServer:
         session_token = str(uuid.uuid4())
         self.sessions[session_token] = username
         
-        # Enregistrer le client
-        self.clients[client_socket] = {
-            "pseudo": username,
-            "session_token": session_token
-        }
+        # Enregistrer le client de façon thread-safe
+        with self.clients_lock:
+            self.clients[client_socket] = {
+                "pseudo": username,
+                "session_token": session_token
+            }
         
         self.send_message(client_socket, "LOGIN_SUCCESS", {
             "user_id": self.users[username]["user_id"],
@@ -187,7 +195,7 @@ class FileShareServer:
             "username": username
         })
         
-        print(f"✅ Connexion réussie: {username}")
+        print(f"✅ Connexion réussie: {username} (Thread: {threading.current_thread().name})")
     
     def handle_list_files(self, client_socket, payload):
         """Gérer la demande de liste de fichiers"""
