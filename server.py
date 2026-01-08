@@ -5,6 +5,7 @@ import hashlib
 import uuid
 import os
 import struct
+import flet as ft
 from datetime import datetime
 
 
@@ -720,12 +721,24 @@ class FileShareServer:
     
     def handle_client(self, client_socket, address):
         """Gérer un client connecté"""
+        # Stocker l'adresse du client
+        with self.clients_lock:
+            self.clients[client_socket] = {
+                "address": address,
+                "last_message_time": datetime.now()
+            }
+        
         try:
             while self.running:
                 message = self.receive_message(client_socket)
                 
                 if not message:
                     break
+                
+                # Mettre à jour le timestamp du dernier message
+                with self.clients_lock:
+                    if client_socket in self.clients:
+                        self.clients[client_socket]["last_message_time"] = datetime.now()
                 
                 message_type = message.get("type")
                 payload = message.get("payload", {})
@@ -796,20 +809,218 @@ class FileShareServer:
             self.socket.close()
 
 
+class AdminDashboard:
+    """Dashboard admin pour monitorer le serveur en temps réel"""
+    
+    def __init__(self, server):
+        self.server = server
+        self.page = None
+        self.clients_table = None
+        self.stats_text = None
+        self.update_timer = None
+    
+    def build_ui(self, page: ft.Page):
+        """Construire l'interface utilisateur"""
+        self.page = page
+        page.title = "Admin Dashboard - Serveur de Partage de Fichiers"
+        page.theme_mode = ft.ThemeMode.DARK
+        page.window.width = 1200
+        page.window.height = 700
+        page.padding = 20
+        
+        # Titre
+        title = ft.Text(
+            "🖥️ Dashboard Administrateur",
+            size=32,
+            weight=ft.FontWeight.BOLD,
+            color="#42A5F5"
+        )
+        
+        # Statistiques générales
+        self.stats_text = ft.Text(
+            self.get_stats_text(),
+            size=16,
+            color="#66BB6A"
+        )
+        
+        # En-têtes du tableau
+        header_row = ft.DataRow(
+            cells=[
+                ft.DataCell(ft.Text("Adresse IP", weight=ft.FontWeight.BOLD)),
+                ft.DataCell(ft.Text("Port", weight=ft.FontWeight.BOLD)),
+                ft.DataCell(ft.Text("Pseudo", weight=ft.FontWeight.BOLD)),
+                ft.DataCell(ft.Text("Room", weight=ft.FontWeight.BOLD)),
+                ft.DataCell(ft.Text("Dernier Message", weight=ft.FontWeight.BOLD)),
+            ]
+        )
+        
+        # Tableau des clients
+        self.clients_table = ft.DataTable(
+            columns=[
+                ft.DataColumn(ft.Text("Adresse IP", weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Port", weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Pseudo", weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Room", weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Dernier Message", weight=ft.FontWeight.BOLD)),
+            ],
+            rows=[],
+            border=ft.Border.all(2, "#1976D2"),
+            border_radius=10,
+            vertical_lines=ft.BorderSide(1, "#1976D2"),
+            horizontal_lines=ft.BorderSide(1, "#1976D2"),
+        )
+        
+        # Container scrollable pour le tableau
+        table_container = ft.Container(
+            content=ft.Column(
+                [self.clients_table],
+                scroll=ft.ScrollMode.AUTO,
+            ),
+            height=450,
+            border=ft.Border.all(2, "#42A5F5"),
+            border_radius=10,
+            padding=10,
+        )
+        
+        # Bouton de rafraîchissement manuel
+        refresh_button = ft.FilledButton(
+            "🔄 Rafraîchir",
+            on_click=lambda _: self.update_clients_list(),
+        )
+        
+        # Layout principal
+        page.add(
+            ft.Column([
+                title,
+                ft.Divider(height=20, color="#42A5F5"),
+                self.stats_text,
+                ft.Divider(height=10, color="#1976D2"),
+                ft.Text("📊 Clients Connectés", size=22, weight=ft.FontWeight.BOLD),
+                table_container,
+                ft.Row([refresh_button], alignment=ft.MainAxisAlignment.CENTER),
+            ])
+        )
+        
+        # Lancer la mise à jour automatique
+        self.start_auto_update()
+    
+    def get_stats_text(self):
+        """Obtenir le texte des statistiques"""
+        with self.server.clients_lock:
+            num_clients = len(self.server.clients)
+        
+        num_users = len(self.server.users)
+        num_rooms = len(self.server.rooms)
+        
+        return f"👥 Clients connectés: {num_clients} | 📝 Utilisateurs enregistrés: {num_users} | 🚪 Rooms: {num_rooms}"
+    
+    def update_clients_list(self):
+        """Mettre à jour la liste des clients"""
+        if not self.page or not self.clients_table:
+            return
+        
+        # Récupérer les données des clients de façon thread-safe
+        with self.server.clients_lock:
+            clients_data = []
+            for client_socket, client_info in self.server.clients.items():
+                address = client_info.get("address", ("Unknown", 0))
+                pseudo = client_info.get("pseudo", "Non authentifié")
+                room = client_info.get("room", "Aucune")
+                last_msg = client_info.get("last_message_time")
+                
+                # Formater le dernier message
+                if last_msg:
+                    elapsed = datetime.now() - last_msg
+                    if elapsed.total_seconds() < 60:
+                        last_msg_str = f"Il y a {int(elapsed.total_seconds())}s"
+                    elif elapsed.total_seconds() < 3600:
+                        last_msg_str = f"Il y a {int(elapsed.total_seconds() / 60)}min"
+                    else:
+                        last_msg_str = last_msg.strftime("%H:%M:%S")
+                else:
+                    last_msg_str = "Jamais"
+                
+                # Trouver le nom de la room
+                room_name = "Aucune"
+                if room and room in self.server.rooms:
+                    room_name = self.server.rooms[room]["name"]
+                
+                clients_data.append({
+                    "ip": address[0],
+                    "port": str(address[1]),
+                    "pseudo": pseudo,
+                    "room": room_name,
+                    "last_msg": last_msg_str
+                })
+        
+        # Mettre à jour le tableau
+        self.clients_table.rows.clear()
+        for client in clients_data:
+            self.clients_table.rows.append(
+                ft.DataRow(
+                    cells=[
+                        ft.DataCell(ft.Text(client["ip"])),
+                        ft.DataCell(ft.Text(client["port"])),
+                        ft.DataCell(ft.Text(client["pseudo"], color="#4DD0E1")),
+                        ft.DataCell(ft.Text(client["room"], color="#FFD54F")),
+                        ft.DataCell(ft.Text(client["last_msg"], color="#66BB6A")),
+                    ]
+                )
+            )
+        
+        # Mettre à jour les stats
+        self.stats_text.value = self.get_stats_text()
+        
+        # Rafraîchir la page
+        try:
+            self.page.update()
+        except:
+            pass
+    
+    def start_auto_update(self):
+        """Démarrer la mise à jour automatique toutes les 2 secondes"""
+        def update_loop():
+            import time
+            while True:
+                time.sleep(2)
+                self.update_clients_list()
+        
+        update_thread = threading.Thread(target=update_loop, daemon=True)
+        update_thread.start()
+    
+    def run(self):
+        """Lancer le dashboard"""
+        ft.app(self.build_ui)
+
+
 if __name__ == "__main__":
     print("""
     ╔═══════════════════════════════════════╗
     ║   PARTAGE DE FICHIERS - SERVEUR       ║
     ║   Dropbox Like - Version 0.1          ║
+    ║   Avec Dashboard Admin                ║
     ╚═══════════════════════════════════════╝
     """)
     
     server = FileShareServer()
+    
+    # Lancer le serveur dans un thread séparé
+    server_thread = threading.Thread(target=server.start, daemon=True)
+    server_thread.start()
+    
+    print("✅ Serveur démarré en arrière-plan")
+    print("🖥️  Ouverture du dashboard admin...\n")
+    
+    # Lancer le dashboard admin (interface graphique)
+    dashboard = AdminDashboard(server)
+    
     try:
-        server.start()
+        dashboard.run()
     except KeyboardInterrupt:
         print("\n")
         server.stop()
         print("👋 Serveur arrêté")
     except Exception as e:
         print(f"\n❌ Erreur: {e}")
+        server.stop()
+
