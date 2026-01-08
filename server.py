@@ -839,6 +839,63 @@ class FileShareServer:
                     return True
         return False
     
+    def broadcast_server_message(self, message, target_type="all", target_id=None):
+        """
+        Envoyer un message broadcast du serveur
+        
+        Args:
+            message (str): Le message à envoyer
+            target_type (str): "all", "room", ou "user"
+            target_id (str): ID de la room ou adresse du user (si applicable)
+        """
+        timestamp = datetime.now().strftime("%d/%m/%Y %H:%M")
+        
+        with self.clients_lock:
+            if target_type == "all":
+                # Envoyer à tous les clients connectés
+                for client_socket in self.clients.keys():
+                    try:
+                        self.send_message(client_socket, "SERVER_BROADCAST", {
+                            "message": message,
+                            "timestamp": timestamp,
+                            "target": "Tous les clients"
+                        })
+                    except:
+                        pass
+                print(f"📢 Broadcast envoyé à tous les clients: {message}")
+            
+            elif target_type == "room" and target_id:
+                # Envoyer à tous les clients d'une room spécifique
+                if target_id in self.rooms:
+                    room_name = self.rooms[target_id]["name"]
+                    for client_socket, client_info in self.clients.items():
+                        if client_info.get("room") == target_id:
+                            try:
+                                self.send_message(client_socket, "SERVER_BROADCAST", {
+                                    "message": message,
+                                    "timestamp": timestamp,
+                                    "target": f"Room {room_name}"
+                                })
+                            except:
+                                pass
+                    print(f"📢 Broadcast envoyé à la room {room_name}: {message}")
+            
+            elif target_type == "user" and target_id:
+                # Envoyer à un client spécifique (par adresse)
+                for client_socket, client_info in self.clients.items():
+                    if client_info.get("address") == target_id:
+                        pseudo = client_info.get("pseudo", "Inconnu")
+                        try:
+                            self.send_message(client_socket, "SERVER_BROADCAST", {
+                                "message": message,
+                                "timestamp": timestamp,
+                                "target": f"Message privé pour {pseudo}"
+                            })
+                            print(f"📢 Message privé envoyé à {pseudo}: {message}")
+                        except:
+                            pass
+                        break
+    
     def stop(self):
         """Arrêter le serveur"""
         print("\n⏳ Arrêt du serveur...")
@@ -927,6 +984,53 @@ class AdminDashboard:
             on_click=lambda _: self.update_clients_list(),
         )
         
+        # === Section Broadcast ===
+        ft.Text("📢 Envoyer un message serveur", size=22, weight=ft.FontWeight.BOLD)
+        
+        # Champ de texte pour le message
+        self.broadcast_message = ft.TextField(
+            label="Message à diffuser",
+            multiline=True,
+            min_lines=2,
+            max_lines=3,
+            hint_text="Tapez votre message...",
+        )
+        
+        # Sélection de la destination
+        self.broadcast_target = ft.Dropdown(
+            label="Destination",
+            width=200,
+            value="all",
+            options=[
+                ft.dropdown.Option("all", "Tous les clients"),
+                ft.dropdown.Option("general", "Room Général"),
+                ft.dropdown.Option("projets", "Room Projets"),
+                ft.dropdown.Option("tech", "Room Tech"),
+                ft.dropdown.Option("random", "Room Random"),
+            ],
+        )
+        
+        # Bouton d'envoi
+        send_broadcast_button = ft.FilledButton(
+            "📢 Envoyer le broadcast",
+            on_click=lambda _: self.send_broadcast(),
+            bgcolor="#FF9800",
+        )
+        
+        broadcast_section = ft.Container(
+            content=ft.Column([
+                ft.Text("📢 Envoyer un message serveur", size=20, weight=ft.FontWeight.BOLD),
+                self.broadcast_message,
+                ft.Row([
+                    self.broadcast_target,
+                    send_broadcast_button,
+                ]),
+            ]),
+            padding=10,
+            border=ft.Border.all(2, "#FF9800"),
+            border_radius=10,
+        )
+        
         # Layout principal
         page.add(
             ft.Column([
@@ -937,6 +1041,8 @@ class AdminDashboard:
                 ft.Text("📊 Clients Connectés", size=22, weight=ft.FontWeight.BOLD),
                 table_container,
                 ft.Row([refresh_button], alignment=ft.MainAxisAlignment.CENTER),
+                ft.Divider(height=20, color="#1976D2"),
+                broadcast_section,
             ])
         )
         
@@ -985,6 +1091,55 @@ class AdminDashboard:
         self.page.dialog = dialog
         dialog.open = True
         self.page.update()
+    
+    def send_broadcast(self):
+        """Envoyer le message broadcast"""
+        message = self.broadcast_message.value
+        target = self.broadcast_target.value
+        
+        if not message or not message.strip():
+            # Afficher une erreur
+            error_dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("❌ Erreur"),
+                content=ft.Text("Le message ne peut pas être vide!"),
+                actions=[
+                    ft.TextButton("OK", on_click=lambda e: self.close_dialog()),
+                ],
+            )
+            self.page.dialog = error_dialog
+            error_dialog.open = True
+            self.page.update()
+            return
+        
+        # Déterminer le type et l'ID de la cible
+        if target == "all":
+            self.server.broadcast_server_message(message, "all")
+        elif target in ["general", "projets", "tech", "random"]:
+            self.server.broadcast_server_message(message, "room", target)
+        
+        # Vider le champ de texte
+        self.broadcast_message.value = ""
+        self.page.update()
+        
+        # Afficher une confirmation
+        success_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("✅ Envoyé"),
+            content=ft.Text("Le message a été diffusé avec succès!"),
+            actions=[
+                ft.TextButton("OK", on_click=lambda e: self.close_dialog()),
+            ],
+        )
+        self.page.dialog = success_dialog
+        success_dialog.open = True
+        self.page.update()
+    
+    def close_dialog(self):
+        """Fermer le dialog actuel"""
+        if self.page.dialog:
+            self.page.dialog.open = False
+            self.page.update()
     
     def update_clients_list(self):
         """Mettre à jour la liste des clients"""

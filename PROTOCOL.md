@@ -174,6 +174,19 @@ Tous les messages suivent le format JSON :
 ```
 *Note: Envoyé au client qui vient d'être kické par un administrateur juste avant la fermeture de sa connexion.*
 
+**SERVER_BROADCAST** (Serveur → Client(s))
+```json
+{
+    "type": "SERVER_BROADCAST",
+    "payload": {
+        "message": "string",
+        "timestamp": "string (dd/mm/yyyy HH:MM)",
+        "target": "string"
+    }
+}
+```
+*Note: Message broadcast envoyé par l'administrateur. Peut être envoyé à tous les clients, une room spécifique, ou en message privé. Le client affiche ce message dans un format spécial pour le distinguer des messages normaux.*
+
 ### Gestion des Fichiers
 
 **LIST_FILES** (Client → Serveur)
