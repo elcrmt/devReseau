@@ -107,23 +107,43 @@ class FileShareServer:
             "timestamp": datetime.now().isoformat()
         }
         try:
-            message_json = json.dumps(message) + "\n"
-            client_socket.sendall(message_json.encode('utf-8'))
+            # Encoder le message JSON en UTF-8
+            message_json = json.dumps(message)
+            message_bytes = message_json.encode('utf-8')
+            
+            # Créer l'en-tête de taille (4 octets, int 32 bits, big-endian)
+            size_header = struct.pack('>I', len(message_bytes))
+            
+            # Envoyer l'en-tête puis les données
+            client_socket.sendall(size_header + message_bytes)
         except Exception as e:
             print(f"❌ Erreur d'envoi: {e}")
     
     def receive_message(self, client_socket):
         """Recevoir un message d'un client"""
         try:
-            buffer = ""
-            while True:
-                chunk = client_socket.recv(1024).decode('utf-8')
+            # Lire l'en-tête de taille (4 octets)
+            size_header = b''
+            while len(size_header) < 4:
+                chunk = client_socket.recv(4 - len(size_header))
                 if not chunk:
                     return None
-                buffer += chunk
-                if "\n" in buffer:
-                    message_str, buffer = buffer.split("\n", 1)
-                    return json.loads(message_str)
+                size_header += chunk
+            
+            # Décoder la taille du message
+            message_size = struct.unpack('>I', size_header)[0]
+            
+            # Lire exactement message_size octets
+            message_bytes = b''
+            while len(message_bytes) < message_size:
+                chunk = client_socket.recv(message_size - len(message_bytes))
+                if not chunk:
+                    return None
+                message_bytes += chunk
+            
+            # Décoder et parser le JSON
+            message_str = message_bytes.decode('utf-8')
+            return json.loads(message_str)
         except Exception as e:
             print(f"❌ Erreur de réception: {e}")
             return None
