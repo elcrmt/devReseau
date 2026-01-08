@@ -287,6 +287,23 @@ class FileShareClient:
                     self.running = False
                     break
                 
+                elif msg_type == "SERVER_BROADCAST":
+                    message = payload.get("message", "")
+                    timestamp = payload.get("timestamp", "")
+                    target = payload.get("target", "")
+                    
+                    # Afficher le message serveur avec un format spécial
+                    print("\n" + "="*60)
+                    print("📢 MESSAGE DU SERVEUR 📢")
+                    print(f"📅 {timestamp}")
+                    print(f"🎯 Destination: {target}")
+                    print("-"*60)
+                    print(f"💬 {message}")
+                    print("="*60 + "\n")
+                    
+                    if self.current_room:
+                        print(f"[{self.pseudo}] > ", end="", flush=True)
+                
                 elif msg_type == "FILE_SHARED":
                     filename = payload.get("filename")
                     uploader = payload.get("uploader")
