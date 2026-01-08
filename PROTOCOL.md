@@ -151,6 +151,29 @@ Tous les messages suivent le format JSON :
 ```
 *Note: Envoyé à tous les clients de la room quand un utilisateur quitte.*
 
+**USER_KICKED** (Serveur → Clients de la room)
+```json
+{
+    "type": "USER_KICKED",
+    "payload": {
+        "username": "string",
+        "room_id": "string"
+    }
+}
+```
+*Note: Envoyé à tous les clients de la room (sauf celui qui est kické) quand un administrateur déconnecte un utilisateur.*
+
+**KICKED** (Serveur → Client kické)
+```json
+{
+    "type": "KICKED",
+    "payload": {
+        "reason": "string"
+    }
+}
+```
+*Note: Envoyé au client qui vient d'être kické par un administrateur juste avant la fermeture de sa connexion.*
+
 ### Gestion des Fichiers
 
 **LIST_FILES** (Client → Serveur)

@@ -274,6 +274,19 @@ class FileShareClient:
                     print(f"\r\033[K👋 {username} a quitté la room")
                     print(f"[{self.pseudo}] > ", end="", flush=True)
                 
+                elif msg_type == "USER_KICKED":
+                    username = payload.get("username")
+                    print(f"\r\033[K⚠️  {username} a été kické")
+                    print(f"[{self.pseudo}] > ", end="", flush=True)
+                
+                elif msg_type == "KICKED":
+                    reason = payload.get("reason", "Vous avez été déconnecté")
+                    print(f"\n\n⚠️  {reason}")
+                    print("👋 Connexion fermée par le serveur\n")
+                    self.listening = False
+                    self.running = False
+                    break
+                
                 elif msg_type == "FILE_SHARED":
                     filename = payload.get("filename")
                     uploader = payload.get("uploader")
