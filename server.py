@@ -801,6 +801,44 @@ class FileShareServer:
             
             client_socket.close()
     
+    def kick_client(self, client_address):
+        """Kicker un client par son adresse (IP, port)"""
+        with self.clients_lock:
+            for client_socket, client_info in list(self.clients.items()):
+                if client_info.get("address") == client_address:
+                    pseudo = client_info.get("pseudo", "Inconnu")
+                    room_id = client_info.get("room")
+                    
+                    # Notifier les autres membres de la room
+                    if room_id and room_id in self.rooms:
+                        if pseudo in self.rooms[room_id]["members"]:
+                            self.rooms[room_id]["members"].remove(pseudo)
+                            # Envoyer le message USER_KICKED aux autres
+                            self.broadcast_to_room(room_id, "USER_KICKED", {
+                                "username": pseudo,
+                                "room_id": room_id
+                            }, exclude_socket=client_socket)
+                    
+                    # Envoyer un message de kick au client
+                    try:
+                        self.send_message(client_socket, "KICKED", {
+                            "reason": "Vous avez été déconnecté par un administrateur"
+                        })
+                    except:
+                        pass
+                    
+                    # Fermer la connexion
+                    print(f"⚠️  Admin a kické: {pseudo} ({client_address})")
+                    del self.clients[client_socket]
+                    
+                    try:
+                        client_socket.close()
+                    except:
+                        pass
+                    
+                    return True
+        return False
+    
     def stop(self):
         """Arrêter le serveur"""
         print("\n⏳ Arrêt du serveur...")
@@ -862,6 +900,7 @@ class AdminDashboard:
                 ft.DataColumn(ft.Text("Pseudo", weight=ft.FontWeight.BOLD)),
                 ft.DataColumn(ft.Text("Room", weight=ft.FontWeight.BOLD)),
                 ft.DataColumn(ft.Text("Dernier Message", weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Action", weight=ft.FontWeight.BOLD)),
             ],
             rows=[],
             border=ft.Border.all(2, "#1976D2"),
@@ -914,6 +953,39 @@ class AdminDashboard:
         
         return f"👥 Clients connectés: {num_clients} | 📝 Utilisateurs enregistrés: {num_users} | 🚪 Rooms: {num_rooms}"
     
+    def confirm_kick(self, address, pseudo):
+        """Afficher une boîte de dialogue de confirmation pour kicker un client"""
+        def close_dialog(e):
+            dialog.open = False
+            self.page.update()
+        
+        def kick_user(e):
+            # Kicker le client
+            success = self.server.kick_client(address)
+            if success:
+                # Fermer le dialog
+                dialog.open = False
+                self.page.update()
+                # Rafraîchir la liste
+                self.update_clients_list()
+            else:
+                close_dialog(e)
+        
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("⚠️ Confirmation"),
+            content=ft.Text(f"Êtes-vous sûr de vouloir kicker {pseudo} ?"),
+            actions=[
+                ft.TextButton("❌ Annuler", on_click=close_dialog),
+                ft.TextButton("✔️ Kicker", on_click=kick_user),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+    
     def update_clients_list(self):
         """Mettre à jour la liste des clients"""
         if not self.page or not self.clients_table:
@@ -948,6 +1020,7 @@ class AdminDashboard:
                 clients_data.append({
                     "ip": address[0],
                     "port": str(address[1]),
+                    "address": address,  # Garder l'adresse complète pour le kick
                     "pseudo": pseudo,
                     "room": room_name,
                     "last_msg": last_msg_str
@@ -956,6 +1029,14 @@ class AdminDashboard:
         # Mettre à jour le tableau
         self.clients_table.rows.clear()
         for client in clients_data:
+            # Créer le bouton kick
+            kick_button = ft.IconButton(
+                icon=ft.icons.CANCEL,
+                icon_color="#F44336",
+                tooltip="Kicker ce client",
+                on_click=lambda e, addr=client["address"], pseudo=client["pseudo"]: self.confirm_kick(addr, pseudo)
+            )
+            
             self.clients_table.rows.append(
                 ft.DataRow(
                     cells=[
@@ -964,6 +1045,7 @@ class AdminDashboard:
                         ft.DataCell(ft.Text(client["pseudo"], color="#4DD0E1")),
                         ft.DataCell(ft.Text(client["room"], color="#FFD54F")),
                         ft.DataCell(ft.Text(client["last_msg"], color="#66BB6A")),
+                        ft.DataCell(kick_button),
                     ]
                 )
             )
