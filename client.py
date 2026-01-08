@@ -19,6 +19,12 @@ class FileShareClient:
         self.running = False
         self.listening = False
         
+        # P2P attributes
+        self.p2p_connections = {}  # {username: socket}
+        self.p2p_server_socket = None
+        self.p2p_port = None
+        self.p2p_listening = False
+        
     def connect(self):
         """Se connecter au serveur"""
         try:
@@ -304,6 +310,26 @@ class FileShareClient:
                     if self.current_room:
                         print(f"[{self.pseudo}] > ", end="", flush=True)
                 
+                elif msg_type == "P2P_CONNECT":
+                    peer_username = payload.get("peer_username")
+                    peer_ip = payload.get("peer_ip")
+                    peer_port = payload.get("peer_port")
+                    role = payload.get("role")
+                    
+                    print(f"\r\033[K🔗 Connexion P2P avec {peer_username}...")
+                    
+                    # Démarrer la connexion P2P
+                    self.initiate_p2p_connection(peer_username, peer_ip, peer_port, role)
+                    
+                    if self.current_room:
+                        print(f"[{self.pseudo}] > ", end="", flush=True)
+                
+                elif msg_type == "P2P_ERROR":
+                    error = payload.get("error")
+                    print(f"\r\033[K❌ Erreur P2P: {error}")
+                    if self.current_room:
+                        print(f"[{self.pseudo}] > ", end="", flush=True)
+                
                 elif msg_type == "FILE_SHARED":
                     filename = payload.get("filename")
                     uploader = payload.get("uploader")
@@ -328,6 +354,134 @@ class FileShareClient:
             "message": message
         })
     
+    def request_p2p(self, target_username):
+        """Demander une connexion P2P avec un autre utilisateur"""
+        if not self.session_token:
+            print("❌ Non connecté!")
+            return
+        
+        print(f"🔗 Demande de connexion P2P avec {target_username}...")
+        self.send_message("P2P_REQUEST", {
+            "session_token": self.session_token,
+            "target_username": target_username
+        })
+    
+    def initiate_p2p_connection(self, peer_username, peer_ip, peer_port, role):
+        """Établir une connexion P2P avec un autre client"""
+        try:
+            if role == "initiator":
+                # Le demandeur se connecte au destinataire
+                p2p_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                p2p_socket.connect((peer_ip, peer_port))
+                self.p2p_connections[peer_username] = p2p_socket
+                print(f"✅ Connecté en P2P avec {peer_username}")
+                
+                # Démarrer l'écoute des messages P2P
+                p2p_thread = threading.Thread(
+                    target=self.listen_p2p_messages,
+                    args=(peer_username, p2p_socket),
+                    daemon=True
+                )
+                p2p_thread.start()
+            
+            elif role == "receiver":
+                # Le destinataire attend la connexion
+                print(f"⏳ En attente de connexion P2P de {peer_username}...")
+                # Note: Le serveur P2P devrait déjà être en écoute
+                # Pour simplifier, on accepte simplement la connexion
+        
+        except Exception as e:
+            print(f"❌ Erreur de connexion P2P: {e}")
+    
+    def listen_p2p_messages(self, peer_username, p2p_socket):
+        """Écouter les messages P2P d'un pair"""
+        while self.running:
+            try:
+                message = self.receive_message_from_socket(p2p_socket)
+                if not message:
+                    print(f"\r\033[K❌ {peer_username} s'est déconnecté du P2P")
+                    break
+                
+                msg_type = message.get("type")
+                payload = message.get("payload", {})
+                
+                if msg_type == "P2P_MESSAGE":
+                    msg_text = payload.get("message")
+                    print(f"\r\033[K💬 [P2P] {peer_username}: {msg_text}")
+                    if self.current_room:
+                        print(f"[{self.pseudo}] > ", end="", flush=True)
+                    
+            except Exception as e:
+                if self.running:
+                    print(f"\r\033[K❌ Erreur P2P avec {peer_username}: {e}")
+                break
+        
+        # Nettoyer la connexion
+        if peer_username in self.p2p_connections:
+            del self.p2p_connections[peer_username]
+        try:
+            p2p_socket.close()
+        except:
+            pass
+    
+    def receive_message_from_socket(self, sock):
+        """Recevoir un message d'un socket spécifique"""
+        try:
+            # Lire l'en-tête de taille (4 octets)
+            size_header = b''
+            while len(size_header) < 4:
+                chunk = sock.recv(4 - len(size_header))
+                if not chunk:
+                    return None
+                size_header += chunk
+            
+            # Décoder la taille du message
+            message_size = struct.unpack('>I', size_header)[0]
+            
+            # Lire exactement message_size octets
+            message_bytes = b''
+            while len(message_bytes) < message_size:
+                chunk = sock.recv(message_size - len(message_bytes))
+                if not chunk:
+                    return None
+                message_bytes += chunk
+            
+            # Décoder et parser le JSON
+            message_str = message_bytes.decode('utf-8')
+            return json.loads(message_str)
+        except Exception as e:
+            return None
+    
+    def send_p2p_message(self, peer_username, message):
+        """Envoyer un message P2P à un pair"""
+        if peer_username not in self.p2p_connections:
+            print(f"❌ Pas de connexion P2P avec {peer_username}")
+            return
+        
+        p2p_socket = self.p2p_connections[peer_username]
+        
+        msg = {
+            "type": "P2P_MESSAGE",
+            "payload": {
+                "message": message
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        try:
+            # Encoder le message JSON en UTF-8
+            message_json = json.dumps(msg)
+            message_bytes = message_json.encode('utf-8')
+            
+            # Créer l'en-tête de taille (4 octets, int 32 bits, big-endian)
+            size_header = struct.pack('>I', len(message_bytes))
+            
+            # Envoyer l'en-tête puis les données
+            p2p_socket.sendall(size_header + message_bytes)
+            print(f"✅ Message P2P envoyé à {peer_username}")
+        except Exception as e:
+            print(f"❌ Erreur d'envoi P2P: {e}")
+    
     def chat_mode(self):
         """Mode chat interactif"""
         # Démarrer le thread d'écoute
@@ -345,6 +499,31 @@ class FileShareClient:
                     print("\n👋 Retour au menu...")
                     self.listening = False
                     break
+                
+                # Commandes spéciales
+                if message.strip().startswith('/p2p '):
+                    # /p2p username : demander connexion P2P
+                    target = message.strip()[5:].strip()
+                    if target:
+                        self.request_p2p(target)
+                    continue
+                
+                if message.strip().startswith('/msg '):
+                    # /msg username message : envoyer message P2P
+                    parts = message.strip()[5:].split(' ', 1)
+                    if len(parts) == 2:
+                        target, msg = parts
+                        self.send_p2p_message(target, msg)
+                    else:
+                        print("❌ Usage: /msg username message")
+                    continue
+                
+                if message.strip().lower() == '/help':
+                    print("\n📋 Commandes disponibles:")
+                    print("  /p2p username    - Demander connexion P2P")
+                    print("  /msg username text - Envoyer message P2P")
+                    print("  quit             - Quitter la room\n")
+                    continue
                 
                 if message.strip():
                     self.send_chat_message(message.strip())

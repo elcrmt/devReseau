@@ -187,6 +187,56 @@ Tous les messages suivent le format JSON :
 ```
 *Note: Message broadcast envoyé par l'administrateur. Peut être envoyé à tous les clients, une room spécifique, ou en message privé. Le client affiche ce message dans un format spécial pour le distinguer des messages normaux.*
 
+### Communication P2P (Peer-to-Peer)
+
+**P2P_REQUEST** (Client → Serveur)
+```json
+{
+    "type": "P2P_REQUEST",
+    "payload": {
+        "session_token": "string",
+        "target_username": "string"
+    }
+}
+```
+*Note: Demande au serveur d'établir une connexion P2P avec un autre client.*
+
+**P2P_CONNECT** (Serveur → Client(s))
+```json
+{
+    "type": "P2P_CONNECT",
+    "payload": {
+        "peer_username": "string",
+        "peer_ip": "string",
+        "peer_port": "integer",
+        "role": "initiator | receiver"
+    }
+}
+```
+*Note: Le serveur envoie les informations de connexion aux deux clients. Le client avec role="initiator" doit se connecter au peer, tandis que le "receiver" attend la connexion.*
+
+**P2P_MESSAGE** (Client A → Client B, direct)
+```json
+{
+    "type": "P2P_MESSAGE",
+    "payload": {
+        "message": "string"
+    }
+}
+```
+*Note: Message envoyé directement entre deux clients sans passer par le serveur. Utilise le même format avec en-tête de taille (4 octets).*
+
+**P2P_ERROR** (Serveur → Client)
+```json
+{
+    "type": "P2P_ERROR",
+    "payload": {
+        "error": "string"
+    }
+}
+```
+*Note: Erreur lors de l'établissement d'une connexion P2P (utilisateur introuvable, etc.).*
+
 ### Gestion des Fichiers
 
 **LIST_FILES** (Client → Serveur)

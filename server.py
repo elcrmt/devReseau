@@ -402,6 +402,68 @@ class FileShareServer:
                 if exclude_socket is None or client_socket != exclude_socket:
                     self.send_message(client_socket, message_type, payload)
     
+    def handle_p2p_request(self, client_socket, payload):
+        """Gérer une demande de connexion P2P entre deux clients"""
+        session_token = payload.get("session_token")
+        target_username = payload.get("target_username")
+        
+        if session_token not in self.sessions:
+            self.send_message(client_socket, "ERROR", {
+                "error": "Session invalide",
+                "code": "INVALID_SESSION"
+            })
+            return
+        
+        requester_username = self.sessions[session_token]
+        
+        # Trouver le socket et l'adresse du demandeur
+        requester_address = None
+        with self.clients_lock:
+            if client_socket in self.clients:
+                requester_address = self.clients[client_socket].get("address")
+        
+        if not requester_address:
+            self.send_message(client_socket, "P2P_ERROR", {
+                "error": "Impossible de récupérer votre adresse"
+            })
+            return
+        
+        # Trouver le socket et l'adresse de la cible
+        target_socket = None
+        target_address = None
+        
+        with self.clients_lock:
+            for sock, client_info in self.clients.items():
+                if client_info.get("pseudo") == target_username:
+                    target_socket = sock
+                    target_address = client_info.get("address")
+                    break
+        
+        if not target_socket or not target_address:
+            self.send_message(client_socket, "P2P_ERROR", {
+                "error": f"Utilisateur {target_username} introuvable"
+            })
+            return
+        
+        # Envoyer les informations de connexion aux deux clients
+        # Au demandeur
+        self.send_message(client_socket, "P2P_CONNECT", {
+            "peer_username": target_username,
+            "peer_ip": target_address[0],
+            "peer_port": target_address[1],
+            "role": "initiator"
+        })
+        
+        # À la cible
+        self.send_message(target_socket, "P2P_CONNECT", {
+            "peer_username": requester_username,
+            "peer_ip": requester_address[0],
+            "peer_port": requester_address[1],
+            "role": "receiver"
+        })
+        
+        print(f"🔗 P2P initié entre {requester_username} et {target_username}")
+    
     def handle_upload_file(self, client_socket, payload):
         """Gérer l'upload d'un fichier dans la room"""
         session_token = payload.get("session_token")
@@ -754,6 +816,8 @@ class FileShareServer:
                     self.handle_join_room(client_socket, payload)
                 elif message_type == "SEND_MESSAGE":
                     self.handle_send_message(client_socket, payload)
+                elif message_type == "P2P_REQUEST":
+                    self.handle_p2p_request(client_socket, payload)
                 elif message_type == "UPLOAD_FILE":
                     self.handle_upload_file(client_socket, payload)
                 elif message_type == "LIST_ROOM_FILES":
