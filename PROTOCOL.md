@@ -127,6 +127,30 @@ Tous les messages suivent le format JSON :
 }
 ```
 
+**USER_JOINED** (Serveur → Clients de la room)
+```json
+{
+    "type": "USER_JOINED",
+    "payload": {
+        "username": "string",
+        "room_id": "string"
+    }
+}
+```
+*Note: Envoyé à tous les clients déjà connectés dans la room (sauf le nouveau) quand un utilisateur rejoint.*
+
+**USER_LEFT** (Serveur → Clients de la room)
+```json
+{
+    "type": "USER_LEFT",
+    "payload": {
+        "username": "string",
+        "room_id": "string"
+    }
+}
+```
+*Note: Envoyé à tous les clients de la room quand un utilisateur quitte.*
+
 ### Gestion des Fichiers
 
 **LIST_FILES** (Client → Serveur)
