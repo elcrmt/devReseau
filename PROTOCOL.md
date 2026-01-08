@@ -6,7 +6,15 @@ Protocole client-serveur pour système de partage de fichiers utilisant TCP et J
 
 ## Format des Messages
 
-Tous les messages suivent le format JSON avec délimiteur `\n` :
+### Structure de base
+
+Chaque message est composé de deux parties :
+1. **En-tête de taille** (4 octets) : Un entier 32 bits (big-endian) indiquant la taille des données JSON qui suivent
+2. **Données JSON** : Le contenu du message au format JSON
+
+### Format JSON
+
+Tous les messages suivent le format JSON :
 
 ```json
 {
@@ -15,6 +23,8 @@ Tous les messages suivent le format JSON avec délimiteur `\n` :
     "timestamp": "ISO-8601"
 }
 ```
+
+**Note**: L'en-tête de taille (4 octets) doit être envoyé AVANT le contenu JSON. Cette taille correspond au nombre d'octets du message JSON encodé en UTF-8.
 
 ## Messages Principaux
 
