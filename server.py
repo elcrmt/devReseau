@@ -6,6 +6,7 @@ import uuid
 import os
 import struct
 import flet as ft
+import asyncio
 from datetime import datetime
 
 
@@ -222,10 +223,10 @@ class FileShareServer:
         
         # Enregistrer le client de façon thread-safe
         with self.clients_lock:
-            self.clients[client_socket] = {
-                "pseudo": username,
-                "session_token": session_token
-            }
+            existing = self.clients.get(client_socket, {})
+            existing["pseudo"] = username
+            existing["session_token"] = session_token
+            self.clients[client_socket] = existing
         
         self.send_message(client_socket, "LOGIN_SUCCESS", {
             "user_id": self.users[username]["user_id"],
@@ -1248,9 +1249,18 @@ class AdminDashboard:
         # Mettre à jour le tableau
         self.clients_table.rows.clear()
         for client in clients_data:
+            icons_mod = getattr(ft, "Icons", None) or getattr(ft, "icons", None)
+            kick_icon = None
+            if icons_mod is not None:
+                kick_icon = (
+                    getattr(icons_mod, "CANCEL", None)
+                    or getattr(icons_mod, "CLOSE", None)
+                    or getattr(icons_mod, "HIGHLIGHT_OFF", None)
+                )
+
             # Créer le bouton kick
             kick_button = ft.IconButton(
-                icon=ft.icons.CANCEL,
+                icon=kick_icon,
                 icon_color="#F44336",
                 tooltip="Kicker ce client",
                 on_click=lambda e, addr=client["address"], pseudo=client["pseudo"]: self.confirm_kick(addr, pseudo)
@@ -1280,18 +1290,22 @@ class AdminDashboard:
     
     def start_auto_update(self):
         """Démarrer la mise à jour automatique toutes les 2 secondes"""
-        def update_loop():
-            import time
+        async def update_loop():
             while True:
-                time.sleep(2)
-                self.update_clients_list()
-        
-        update_thread = threading.Thread(target=update_loop, daemon=True)
-        update_thread.start()
+                try:
+                    self.update_clients_list()
+                except Exception as e:
+                    print(f"❌ Dashboard update error: {e}")
+                await asyncio.sleep(2)
+
+        self.page.run_task(update_loop)
     
     def run(self):
         """Lancer le dashboard"""
-        ft.app(self.build_ui)
+        if hasattr(ft, "run"):
+            ft.run(self.build_ui)
+        else:
+            ft.app(self.build_ui)
 
 
 if __name__ == "__main__":
