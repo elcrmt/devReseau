@@ -5,6 +5,7 @@ import sys
 import os
 import struct
 from datetime import datetime
+from tkinter import Tk, filedialog
 
 
 class FileShareClient:
@@ -602,7 +603,35 @@ class FileShareClient:
             print("❌ Non connecté à une room!")
             return
         
-        file_path = input("\n📁 Chemin du fichier à partager: ").strip()
+        # Demander à l'utilisateur sa préférence
+        print("\n📁 Comment voulez-vous sélectionner le fichier?")
+        print("1. 🖱️  Sélecteur de fichiers (graphique)")
+        print("2. ⌨️  Entrer le chemin manuellement")
+        choice = input("Choix (1 ou 2): ").strip()
+        
+        if choice == "1":
+            # Sélecteur graphique
+            print("📂 Ouverture du sélecteur de fichiers...")
+            root = Tk()
+            root.withdraw()  # Cacher la fenêtre principale
+            root.attributes('-topmost', True)  # Mettre au premier plan
+            file_path = filedialog.askopenfilename(
+                title="Sélectionner un fichier à partager",
+                filetypes=[
+                    ("Tous les fichiers", "*.*"),
+                    ("Documents", "*.pdf;*.doc;*.docx;*.txt"),
+                    ("Images", "*.jpg;*.jpeg;*.png;*.gif"),
+                    ("Vidéos", "*.mp4;*.avi;*.mkv"),
+                ]
+            )
+            root.destroy()
+            
+            if not file_path:
+                print("❌ Aucun fichier sélectionné!")
+                return
+        else:
+            # Saisie manuelle
+            file_path = input("\n📁 Chemin du fichier à partager: ").strip()
         
         if not os.path.exists(file_path):
             print("❌ Fichier introuvable!")
@@ -669,17 +698,43 @@ class FileShareClient:
             print(f"\n❌ Erreur d'upload: {e}")
     
     def download_file(self):
-        """Télécharger un fichier de la room"""
+        """Télécharger un fichier de la room (avec affichage de la liste)"""
         if not self.session_token or not self.current_room:
             print("❌ Non connecté à une room!")
             return
         
-        filename = input("\n📥 Nom du fichier à télécharger: ").strip()
+        # 1. Récupérer la liste des fichiers de la room
+        self.send_message("LIST_ROOM_FILES", {
+            "session_token": self.session_token
+        })
+        response = self.receive_message()
+        files = []
+        if response and response["type"] == "ROOM_FILES_LIST":
+            files = response['payload']['files']
         
-        if not filename:
-            print("❌ Nom de fichier invalide!")
+        if not files:
+            print(f"\n📁 Aucun fichier à télécharger dans #{self.current_room_name}")
             return
         
+        print(f"\n📁 Fichiers disponibles dans #{self.current_room_name} :")
+        print("-" * 70)
+        for idx, file in enumerate(files, 1):
+            size_mb = file['size'] / (1024 * 1024)
+            print(f"{idx}. {file['filename']:30} | {size_mb:>6.2f} MB | par {file['uploader']}")
+        print("-" * 70)
+        
+        # 2. Demander à l'utilisateur de choisir
+        choix = input("\nNuméro du fichier à télécharger: ").strip()
+        try:
+            choix = int(choix)
+            if choix < 1 or choix > len(files):
+                print("❌ Numéro invalide!")
+                return
+        except Exception:
+            print("❌ Entrée invalide!")
+            return
+        
+        filename = files[choix-1]['filename']
         print(f"\n⏳ Téléchargement de '{filename}'...")
         
         # Envoyer la requête de download
